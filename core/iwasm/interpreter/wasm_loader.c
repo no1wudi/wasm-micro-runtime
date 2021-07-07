@@ -1950,7 +1950,8 @@ load_function_section(const uint8 *buf, const uint8 *buf_end,
             local_type_index = 0;
             for (j = 0; j < local_set_count; j++) {
                 read_leb_uint32(p_code, buf_code_end, sub_local_count);
-                if (local_type_index + sub_local_count <= local_type_index
+                if (!sub_local_count
+                    || local_type_index > UINT32_MAX - sub_local_count
                     || local_type_index + sub_local_count > local_count) {
                     set_error_buf(error_buf, error_buf_size,
                                   "invalid local count");
@@ -2304,7 +2305,7 @@ check_table_index(const WASMModule *module, uint32 table_index,
       !wasm_get_ref_types_flag() &&
 #endif
       table_index != 0) {
-        set_error_buf(error_buf, error_buf_size, "zero flag expected");
+        set_error_buf(error_buf, error_buf_size, "zero byte expected");
         return false;
     }
 
@@ -7472,13 +7473,8 @@ handle_op_block_and_loop:
                 CHECK_MEMORY();
                 /* reserved byte 0x00 */
                 if (*p++ != 0x00) {
-#if WASM_ENABLE_REF_TYPES != 0
                     set_error_buf(error_buf, error_buf_size,
                                   "zero byte expected");
-#else
-                    set_error_buf(error_buf, error_buf_size,
-                                  "zero flag expected");
-#endif
                     goto fail;
                 }
                 PUSH_I32();
@@ -7490,13 +7486,8 @@ handle_op_block_and_loop:
                 CHECK_MEMORY();
                 /* reserved byte 0x00 */
                 if (*p++ != 0x00) {
-#if WASM_ENABLE_REF_TYPES != 0
                     set_error_buf(error_buf, error_buf_size,
                                   "zero byte expected");
-#else
-                    set_error_buf(error_buf, error_buf_size,
-                                  "zero flag expected");
-#endif
                     goto fail;
                 }
                 POP_AND_PUSH(VALUE_TYPE_I32, VALUE_TYPE_I32);
@@ -7811,7 +7802,7 @@ handle_op_block_and_loop:
                         goto fail_unknown_memory;
 
                     if (*p++ != 0x00)
-                        goto fail_zero_flag_expected;
+                        goto fail_zero_byte_expected;
 
                     if (data_seg_idx >= module->data_seg_count) {
                         set_error_buf_v(error_buf, error_buf_size,
@@ -7848,7 +7839,7 @@ handle_op_block_and_loop:
                 {
                     /* both src and dst memory index should be 0 */
                     if (*(int16*)p != 0x0000)
-                        goto fail_zero_flag_expected;
+                        goto fail_zero_byte_expected;
                     p += 2;
 
                     if (module->import_memory_count == 0 && module->memory_count == 0)
@@ -7862,7 +7853,7 @@ handle_op_block_and_loop:
                 case WASM_OP_MEMORY_FILL:
                 {
                     if (*p++ != 0x00) {
-                        goto fail_zero_flag_expected;
+                        goto fail_zero_byte_expected;
                     }
                     if (module->import_memory_count == 0 && module->memory_count == 0) {
                         goto fail_unknown_memory;
@@ -7872,9 +7863,9 @@ handle_op_block_and_loop:
                     POP_I32();
                     POP_I32();
                     break;
-fail_zero_flag_expected:
+fail_zero_byte_expected:
                     set_error_buf(error_buf, error_buf_size,
-                                  "zero flag expected");
+                                  "zero byte expected");
                     goto fail;
 
 fail_unknown_memory:
@@ -8460,7 +8451,7 @@ fail_data_cnt_sec_require:
                         /* reserved byte 0x00 */
                         if (*p++ != 0x00) {
                             set_error_buf(error_buf, error_buf_size,
-                                          "zero flag expected");
+                                          "zero byte expected");
                             goto fail;
                         }
                         break;

@@ -314,6 +314,14 @@ WASM_RUNTIME_API_EXTERN void
 wasm_runtime_unload(wasm_module_t module);
 
 WASM_RUNTIME_API_EXTERN void
+wasm_runtime_set_wasi_args_ex(wasm_module_t module,
+                           const char *dir_list[], uint32_t dir_count,
+                           const char *map_dir_list[], uint32_t map_dir_count,
+                           const char *env[], uint32_t env_count,
+                           char *argv[], int argc,
+                           int stdinfd, int stdoutfd, int stderrfd);
+
+WASM_RUNTIME_API_EXTERN void
 wasm_runtime_set_wasi_args(wasm_module_t module,
                            const char *dir_list[], uint32_t dir_count,
                            const char *map_dir_list[], uint32_t map_dir_count,
@@ -495,7 +503,9 @@ wasm_runtime_call_wasm_v(wasm_exec_env_t exec_env,
  *
  * @param module_inst the WASM module instance
  * @param argc the number of arguments
- * @param argv the arguments array
+ * @param argv the arguments array, if the main function has return value,
+ *   *(int*)argv stores the return value of the called main function after
+ *   this function returns.
  *
  * @return true if the main function is called, false otherwise and exception
  *   will be thrown, the caller can call wasm_runtime_get_exception to get

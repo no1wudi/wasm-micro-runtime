@@ -189,7 +189,7 @@ failed:                                                                       \
         size_t i = 0;                                                         \
         memset(out, 0, sizeof(Vector));                                       \
                                                                               \
-        if (!src->size) {                                                     \
+        if (!src || !src->size) {                                             \
             return;                                                           \
         }                                                                     \
                                                                               \
@@ -232,6 +232,7 @@ WASM_DEFINE_VEC_OWN(store, wasm_store_delete)
 WASM_DEFINE_VEC_OWN(module, wasm_module_delete_internal)
 WASM_DEFINE_VEC_OWN(instance, wasm_instance_delete_internal)
 WASM_DEFINE_VEC_OWN(extern, wasm_extern_delete)
+WASM_DEFINE_VEC_OWN(frame, wasm_frame_delete)
 
 static inline bool
 valid_module_type(uint32 module_type)
@@ -255,6 +256,21 @@ valid_module_type(uint32 module_type)
     return result;
 }
 
+/* conflicting declaration between aot_export.h and aot.h */
+#if WASM_ENABLE_AOT != 0 && WASM_ENABLE_JIT != 0
+bool
+aot_compile_wasm_file_init();
+
+void
+aot_compile_wasm_file_destroy();
+
+uint8*
+aot_compile_wasm_file(const uint8 *wasm_file_buf, uint32 wasm_file_size,
+                      uint32 opt_level, uint32 size_level,
+                      char *error_buf, uint32 error_buf_size,
+                      uint32 *p_aot_file_size);
+#endif
+
 /* Runtime Environment */
 static void
 wasm_engine_delete_internal(wasm_engine_t *engine)
@@ -263,6 +279,10 @@ wasm_engine_delete_internal(wasm_engine_t *engine)
         DEINIT_VEC(engine->stores, wasm_store_vec_delete);
         wasm_runtime_free(engine);
     }
+
+#if WASM_ENABLE_AOT != 0 && WASM_ENABLE_JIT != 0
+    aot_compile_wasm_file_destroy();
+#endif
 
     wasm_runtime_destroy();
 }
@@ -309,6 +329,12 @@ wasm_engine_new_internal(mem_alloc_type_t type, const MemAllocOption *opts)
     bh_log_set_verbose_level(5);
 #else
     bh_log_set_verbose_level(3);
+#endif
+
+#if WASM_ENABLE_AOT != 0 && WASM_ENABLE_JIT != 0
+    if (!aot_compile_wasm_file_init()) {
+        goto failed;
+    }
 #endif
 
     /* create wasm_engine_t */
@@ -1289,10 +1315,106 @@ wasm_val_same(const wasm_val_t *v1, const wasm_val_t *v2)
     return false;
 }
 
+static wasm_frame_t *
+wasm_frame_new(wasm_instance_t *instance,
+               size_t module_offset,
+               uint32 func_index,
+               size_t func_offset)
+{
+    wasm_frame_t *frame;
+
+    if (!(frame = malloc_internal(sizeof(wasm_frame_t)))) {
+        return NULL;
+    }
+
+    frame->instance = instance;
+    frame->module_offset = module_offset;
+    frame->func_index = func_index;
+    frame->func_offset = func_offset;
+    return frame;
+}
+
+own wasm_frame_t *
+wasm_frame_copy(const wasm_frame_t *src)
+{
+    if (!src) {
+        return NULL;
+    }
+
+    return wasm_frame_new(src->instance, src->module_offset, src->func_index,
+                          src->func_offset);
+}
+
+void
+wasm_frame_delete(own wasm_frame_t *frame)
+{
+    if (!frame) {
+        return;
+    }
+
+    wasm_runtime_free(frame);
+}
+
+struct wasm_instance_t *
+wasm_frame_instance(const wasm_frame_t *frame)
+{
+    return frame ? frame->instance : NULL;
+}
+
+size_t
+wasm_frame_module_offset(const wasm_frame_t *frame)
+{
+    return frame ? frame->module_offset : 0;
+}
+
+uint32_t
+wasm_frame_func_index(const wasm_frame_t *frame)
+{
+    return frame ? frame->func_index : 0;
+}
+
+size_t
+wasm_frame_func_offset(const wasm_frame_t *frame)
+{
+    return frame ? frame->func_offset : 0;
+}
+
 static wasm_trap_t *
-wasm_trap_new_internal(const char *string)
+wasm_trap_new_internal(WASMModuleInstanceCommon *inst_comm_rt,
+                       const char *default_error_info)
 {
     wasm_trap_t *trap;
+    const char *error_info = NULL;
+    wasm_instance_vec_t *instances;
+    wasm_instance_t *frame_instance = NULL;
+    uint32 i;
+
+    if (!singleton_engine || !singleton_engine->stores
+        || !singleton_engine->stores->num_elems) {
+        return NULL;
+    }
+
+#if WASM_ENABLE_INTERP != 0
+    if (inst_comm_rt->module_type == Wasm_Module_Bytecode) {
+        if (!(error_info =
+                wasm_get_exception((WASMModuleInstance *)inst_comm_rt))) {
+            return NULL;
+        }
+    }
+#endif
+
+#if WASM_ENABLE_AOT != 0
+    if (inst_comm_rt->module_type == Wasm_Module_AoT) {
+        if (!(error_info =
+                aot_get_exception((AOTModuleInstance *)inst_comm_rt))) {
+            return NULL;
+        }
+    }
+#endif
+
+    if (!error_info && !(error_info = default_error_info)) {
+        return NULL;
+    }
 
     if (!(trap = malloc_internal(sizeof(wasm_trap_t)))) {
         return NULL;
@@ -1302,9 +1424,37 @@ wasm_trap_new_internal(const char *string)
         goto failed;
     }
 
-    wasm_name_new_from_string(trap->message, string);
-    if (strlen(string) && !trap->message->data) {
+    wasm_name_new_from_string_nt(trap->message, error_info);
+    if (strlen(error_info) && !trap->message->data) {
         goto failed;
+    }
+
+#if WASM_ENABLE_DUMP_CALL_STACK != 0
+#if WASM_ENABLE_INTERP != 0
+    if (inst_comm_rt->module_type == Wasm_Module_Bytecode) {
+        trap->frames = ((WASMModuleInstance *)inst_comm_rt)->frames;
+    }
+#endif
+#endif /* WASM_ENABLE_DUMP_CALL_STACK != 0 */
+
+    /* allow a NULL frames list */
+    if (!trap->frames) {
+        return trap;
+    }
+
+    if (!(instances = singleton_engine->stores->data[0]->instances)) {
+        goto failed;
+    }
+
+    for (i = 0; i < instances->num_elems; i++) {
+        if (instances->data[i]->inst_comm_rt == inst_comm_rt) {
+            frame_instance = instances->data[i];
+            break;
+        }
+    }
+
+    for (i = 0; i < trap->frames->num_elems; i++) {
+        (((wasm_frame_t *)trap->frames->data) + i)->instance = frame_instance;
     }
 
     return trap;
@@ -1342,6 +1492,7 @@ wasm_trap_delete(wasm_trap_t *trap)
     }
 
     DEINIT_VEC(trap->message, wasm_byte_vec_delete);
+    /* reuse frames of WASMModuleInstance, do not free it here */
 
     wasm_runtime_free(trap);
 }
@@ -1354,6 +1505,65 @@ wasm_trap_message(const wasm_trap_t *trap, own wasm_message_t *out)
     }
 
     wasm_byte_vec_copy(out, trap->message);
+}
+
+own wasm_frame_t *
+wasm_trap_origin(const wasm_trap_t *trap)
+{
+    wasm_frame_t *latest_frame;
+
+    if (!trap || !trap->frames || !trap->frames->num_elems) {
+        return NULL;
+    }
+
+    /* first frame is the latest frame */
+    latest_frame = (wasm_frame_t *)trap->frames->data;
+    return wasm_frame_copy(latest_frame);
+}
+
+void
+wasm_trap_trace(const wasm_trap_t *trap, own wasm_frame_vec_t *out)
+{
+    uint32 i;
+
+    if (!trap || !out) {
+        return;
+    }
+
+    if (!trap->frames || !trap->frames->num_elems) {
+        wasm_frame_vec_new_empty(out);
+        return;
+    }
+
+    wasm_frame_vec_new_uninitialized(out, trap->frames->num_elems);
+    if (out->size && !out->data) {
+        return;
+    }
+
+    for (i = 0; i < trap->frames->num_elems; i++) {
+        wasm_frame_t *frame;
+
+        frame = ((wasm_frame_t *)trap->frames->data) + i;
+
+        if (!(out->data[i] =
+                wasm_frame_new(frame->instance, frame->module_offset,
+                               frame->func_index, frame->func_offset))) {
+            goto failed;
+        }
+        out->num_elems++;
+    }
+
+    return;
+failed:
+    for (i = 0; i < out->num_elems; i++) {
+        if (out->data[i]) {
+            wasm_runtime_free(out->data[i]);
+        }
+    }
+
+    if (out->data) {
+        wasm_runtime_free(out->data);
+    }
 }
 
 struct wasm_module_ex_t {
@@ -1386,6 +1596,10 @@ wasm_module_new(wasm_store_t *store, const wasm_byte_vec_t *binary)
 {
     char error_buf[128] = { 0 };
     wasm_module_ex_t *module_ex = NULL;
+#if WASM_ENABLE_AOT != 0 && WASM_ENABLE_JIT != 0
+    uint8 *aot_file_buf = NULL;
+    uint32 aot_file_size;
+#endif
 
     bh_assert(singleton_engine);
 
@@ -1401,13 +1615,35 @@ wasm_module_new(wasm_store_t *store, const wasm_byte_vec_t *binary)
 
     INIT_VEC(module_ex->binary, wasm_byte_vec_new, binary->size, binary->data);
 
-    module_ex->module_comm_rt =
-        wasm_runtime_load((uint8 *)module_ex->binary->data,
-                          (uint32)module_ex->binary->size,
-                          error_buf, (uint32)sizeof(error_buf));
-    if (!(module_ex->module_comm_rt)) {
-        LOG_ERROR(error_buf);
-        goto failed;
+#if WASM_ENABLE_AOT != 0 && WASM_ENABLE_JIT != 0
+    if (get_package_type((uint8 *)module_ex->binary->data,
+                         (uint32)module_ex->binary->size)
+        == Wasm_Module_Bytecode) {
+        if (!(aot_file_buf = aot_compile_wasm_file(
+                (uint8 *)module_ex->binary->data,
+                (uint32)module_ex->binary->size, 3, 3, error_buf,
+                (uint32)sizeof(error_buf), &aot_file_size))) {
+            LOG_ERROR(error_buf);
+            goto failed;
+        }
+
+        if (!(module_ex->module_comm_rt =
+                wasm_runtime_load(aot_file_buf, aot_file_size, error_buf,
+                                  (uint32)sizeof(error_buf)))) {
+            LOG_ERROR(error_buf);
+            goto failed;
+        }
+    }
+    else
+#endif
+    {
+        module_ex->module_comm_rt = wasm_runtime_load(
+          (uint8 *)module_ex->binary->data, (uint32)module_ex->binary->size,
+          error_buf, (uint32)sizeof(error_buf));
+        if (!(module_ex->module_comm_rt)) {
+            LOG_ERROR(error_buf);
+            goto failed;
+        }
     }
 
     /* add it to a watching list in store */
@@ -1846,172 +2082,6 @@ failed_exporttype_new:
     wasm_exporttype_vec_delete(out);
 }
 
-static uint32
-argv_to_params(const uint64 *argv,
-               const wasm_valtype_vec_t *param_defs,
-               wasm_val_t out[])
-{
-    size_t i = 0;
-    uint32 argc = 0;
-
-    for (i = 0; i < param_defs->num_elems; i++) {
-        wasm_valtype_t *param_def = param_defs->data[i];
-        wasm_val_t *param = out + i;
-        switch (param_def->kind) {
-            case WASM_I32:
-                param->kind = WASM_I32;
-                param->of.i32 = *(uint32 *)(argv + i);
-                argc++;
-                break;
-            case WASM_I64:
-                param->kind = WASM_I64;
-                param->of.i64 = *(uint64 *)(argv + i);
-                argc++;
-                break;
-            case WASM_F32:
-                param->kind = WASM_F32;
-                param->of.f32 = *(float32 *)(argv + i);
-                argc++;
-                break;
-            case WASM_F64:
-                param->kind = WASM_F64;
-                param->of.f64 = *(float64 *)(argv + i);
-                argc++;
-                break;
-            default:
-                LOG_WARNING("%s meets unsupported type: %d", __FUNCTION__,
-                            param_def->kind);
-                goto failed;
-        }
-    }
-
-    return argc;
-failed:
-    return 0;
-}
-
-static uint32
-results_to_argv(const wasm_val_t *results,
-                const wasm_valtype_vec_t *result_defs,
-                uint64 *out)
-{
-    size_t i = 0;
-    uint32 argc = 0;
-
-    for (i = 0; i < result_defs->num_elems; ++i) {
-        wasm_valtype_t *result_def = result_defs->data[i];
-        const wasm_val_t *result = results + i;
-        switch (result_def->kind) {
-            case WASM_I32:
-                *(int32 *)(out + i) = result->of.i32;
-                argc++;
-                break;
-            case WASM_I64:
-                *(int64 *)(out + i) = result->of.i64;
-                argc++;
-                break;
-            case WASM_F32:
-                *(float32 *)(out + i) = result->of.f32;
-                argc++;
-                break;
-            case WASM_F64:
-                *(float64 *)(out + i) = result->of.f64;
-                argc++;
-                break;
-            default:
-            {
-                LOG_WARNING("%s meets unsupported kind", __FUNCTION__,
-                            result_def->kind);
-                goto failed;
-            }
-        }
-    }
-
-    return argc;
-failed:
-    return 0;
-}
-
-static wasm_trap_t *cur_trap = NULL;
-static void
-native_func_trampoline(wasm_exec_env_t exec_env, uint64 *argv)
-{
-    wasm_val_t *params = NULL, *results = NULL;
-    uint32 argc = 0;
-    const wasm_func_t *func = NULL;
-    wasm_trap_t *trap = NULL;
-    size_t param_count, result_count;
-
-    func = wasm_runtime_get_function_attachment(exec_env);
-    bh_assert(func);
-
-    param_count = wasm_func_param_arity(func);
-    if (param_count) {
-        if (!argv) {
-            goto failed;
-        }
-
-        if (!(params = malloc_internal(param_count * sizeof(wasm_val_t)))) {
-            goto failed;
-        }
-
-        /* argv -> const wasm_val_t params[] */
-        if (!(argc = argv_to_params(argv, wasm_functype_params(func->type),
-                                    params))) {
-            goto failed;
-        }
-    }
-
-    result_count = wasm_func_result_arity(func);
-    if (result_count) {
-        if (!argv) {
-            goto failed;
-        }
-
-        if (!(results = malloc_internal(result_count * sizeof(wasm_val_t)))) {
-            goto failed;
-        }
-    }
-
-    if (func->with_env) {
-        trap = func->u.cb_env.cb(func->u.cb_env.env, params, results);
-    }
-    else {
-        trap = func->u.cb(params, results);
-    }
-
-    if (trap) {
-        wasm_byte_vec_t message = { 0 };
-        wasm_trap_message(trap, &message);
-        if (message.data) {
-            LOG_WARNING("got a trap %s", message.data);
-            wasm_runtime_set_exception(exec_env->module_inst,
-                                       "call failed, meet a wasm_trap_t");
-        }
-        wasm_byte_vec_delete(&message);
-
-        cur_trap = trap;
-    }
-
-    if (argv) {
-        memset(argv, 0, wasm_func_param_arity(func) * sizeof(uint64));
-    }
-
-    /* there is no trap and there is return values */
-    if (!trap && result_count) {
-        /* wasm_val_t results[] -> argv */
-        if (!(argc = results_to_argv(
-                results, wasm_functype_results(func->type), argv))) {
-            goto failed;
-        }
-    }
-
-failed:
-    FREEIF(params);
-    FREEIF(results);
-    return;
-}
-
 static wasm_func_t *
 wasm_func_new_basic(const wasm_functype_t *type,
                     wasm_func_callback_t func_callback)
@@ -2342,8 +2412,6 @@ wasm_func_call(const wasm_func_t *func,
 
     bh_assert(func && func->type && func->inst_comm_rt);
 
-    cur_trap = NULL;
-
 #if WASM_ENABLE_INTERP != 0
     if (func->inst_comm_rt->module_type == Wasm_Module_Bytecode) {
         func_comm_rt = ((WASMModuleInstance *)func->inst_comm_rt)->functions
@@ -2354,7 +2422,8 @@ wasm_func_call(const wasm_func_t *func,
 #if WASM_ENABLE_AOT != 0
     if (func->inst_comm_rt->module_type == Wasm_Module_AoT) {
         if (!(func_comm_rt = func->func_comm_rt)) {
-            AOTModuleInstance *inst_aot = (AOTModuleInstance *)func->inst_comm_rt;
+            AOTModuleInstance *inst_aot =
+              (AOTModuleInstance *)func->inst_comm_rt;
             AOTModule *module_aot = (AOTModule *)inst_aot->aot_module.ptr;
             uint32 export_i = 0, export_func_j = 0;
 
@@ -2363,9 +2432,9 @@ wasm_func_call(const wasm_func_t *func,
                 if (export->kind == EXPORT_KIND_FUNC) {
                     if (export->index == func->func_idx_rt) {
                         func_comm_rt =
-                            (AOTFunctionInstance *)inst_aot->export_funcs.ptr
-                            + export_func_j;
-                        ((wasm_func_t*)func)->func_comm_rt = func_comm_rt;
+                          (AOTFunctionInstance *)inst_aot->export_funcs.ptr
+                          + export_func_j;
+                        ((wasm_func_t *)func)->func_comm_rt = func_comm_rt;
                         break;
                     }
                     export_func_j++;
@@ -2382,7 +2451,7 @@ wasm_func_call(const wasm_func_t *func,
     param_count = wasm_func_param_arity(func);
     result_count = wasm_func_result_arity(func);
     alloc_count = (param_count > result_count) ? param_count : result_count;
-    if (alloc_count > sizeof(argv_buf)/sizeof(uint64)) {
+    if (alloc_count > sizeof(argv_buf) / sizeof(uint64)) {
         if (!(argv = malloc_internal(sizeof(uint64) * alloc_count))) {
             goto failed;
         }
@@ -2422,17 +2491,14 @@ wasm_func_call(const wasm_func_t *func,
 failed:
     if (argv != argv_buf)
         wasm_runtime_free(argv);
-    if (cur_trap) {
-        return cur_trap;
+
+    /* trap -> exception -> trap */
+    if (wasm_runtime_get_exception(func->inst_comm_rt)) {
+        return wasm_trap_new_internal(func->inst_comm_rt, NULL);
     }
     else {
-        if (wasm_runtime_get_exception(func->inst_comm_rt)) {
-            return wasm_trap_new_internal(
-              wasm_runtime_get_exception(func->inst_comm_rt));
-        }
-        else {
-            return wasm_trap_new_internal("wasm_func_call failed");
-        }
+        return wasm_trap_new_internal(func->inst_comm_rt,
+                                      "wasm_func_call failed");
     }
 }
 
@@ -3182,10 +3248,16 @@ interp_link_func(const wasm_instance_t *inst,
         return false;
     }
 
-    /* add native_func_trampoline as a NativeSymbol */
-    imported_func_interp->u.function.call_conv_raw = true;
-    imported_func_interp->u.function.attachment = cloned;
-    imported_func_interp->u.function.func_ptr_linked = native_func_trampoline;
+    imported_func_interp->u.function.call_conv_wasm_c_api = true;
+    imported_func_interp->u.function.wasm_c_api_with_env = import->with_env;
+    if (import->with_env) {
+        imported_func_interp->u.function.func_ptr_linked = import->u.cb_env.cb;
+        imported_func_interp->u.function.attachment = import->u.cb_env.env;
+    }
+    else {
+        imported_func_interp->u.function.func_ptr_linked = import->u.cb;
+        imported_func_interp->u.function.attachment = NULL;
+    }
     import->func_idx_rt = func_idx_rt;
 
     return true;
@@ -3612,8 +3684,8 @@ wasm_instance_new(wasm_store_t *store,
                   own wasm_trap_t **traps)
 {
     char error_buf[128] = { 0 };
-    const uint32 stack_size = 16 * 1024;
-    const uint32 heap_size = 16 * 1024;
+    const uint32 stack_size = 32 * 1024;
+    const uint32 heap_size = 32 * 1024;
     uint32 import_count = 0;
     wasm_instance_t *instance = NULL;
     uint32 i = 0;
@@ -3672,9 +3744,8 @@ wasm_instance_new(wasm_store_t *store,
 #endif
     }
 
-    instance->inst_comm_rt =
-        wasm_runtime_instantiate(*module, stack_size, heap_size,
-                                 error_buf, sizeof(error_buf));
+    instance->inst_comm_rt = wasm_runtime_instantiate(
+      *module, stack_size, heap_size, error_buf, sizeof(error_buf));
     if (!instance->inst_comm_rt) {
         LOG_ERROR(error_buf);
         goto failed;

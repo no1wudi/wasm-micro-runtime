@@ -630,6 +630,14 @@ wasm_exec_env_set_aux_stack(WASMExecEnv *exec_env,
 #endif
 
 #if WASM_ENABLE_LIBC_WASI != 0
+WASM_RUNTIME_API_EXTERN void
+wasm_runtime_set_wasi_args_ex(WASMModuleCommon *module,
+                           const char *dir_list[], uint32 dir_count,
+                           const char *map_dir_list[], uint32 map_dir_count,
+                           const char *env_list[], uint32 env_count,
+                           char *argv[], int argc,
+                           int stdinfd, int stdoutfd, int stderrfd);
+
 /* See wasm_export.h for description */
 WASM_RUNTIME_API_EXTERN void
 wasm_runtime_set_wasi_args(WASMModuleCommon *module,
@@ -652,6 +660,7 @@ wasm_runtime_init_wasi(WASMModuleInstanceCommon *module_inst,
                        const char *map_dir_list[], uint32 map_dir_count,
                        const char *env[], uint32 env_count,
                        char *argv[], uint32 argc,
+                       int stdinfd, int stdoutfd, int stderrfd,
                        char *error_buf, uint32 error_buf_size);
 
 void
@@ -786,6 +795,12 @@ wasm_runtime_get_memory_data(const WASMModuleInstanceCommon *module_inst_comm,
 uint32
 wasm_runtime_get_memory_data_size(const WASMModuleInstanceCommon *module_inst_comm,
                                   uint32 memory_inst_idx);
+
+bool
+wasm_runtime_invoke_c_api_native(WASMModuleInstanceCommon *module_inst,
+                                 void *func_ptr, WASMType *func_type,
+                                 uint32 argc, uint32 *argv,
+                                 bool with_env, void *wasm_c_api_env);
 
 #ifdef __cplusplus
 }

@@ -21,6 +21,7 @@
 #if WASM_ENABLE_SHARED_MEMORY != 0
 #include "wasm_shared_memory.h"
 #endif
+#include "../common/wasm_c_api_internal.h"
 
 #if WASM_ENABLE_MULTI_MODULE != 0
 /*
@@ -1793,12 +1794,14 @@ wasm_runtime_enlarge_memory(WASMModuleInstanceCommon *module,
 }
 
 #if WASM_ENABLE_LIBC_WASI != 0
+
 void
-wasm_runtime_set_wasi_args(WASMModuleCommon *module,
+wasm_runtime_set_wasi_args_ex(WASMModuleCommon *module,
                            const char *dir_list[], uint32 dir_count,
                            const char *map_dir_list[], uint32 map_dir_count,
                            const char *env_list[], uint32 env_count,
-                           char *argv[], int argc)
+                           char *argv[], int argc,
+                           int stdinfd, int stdoutfd, int stderrfd)
 {
     WASIArguments *wasi_args = NULL;
 
@@ -1820,7 +1823,25 @@ wasm_runtime_set_wasi_args(WASMModuleCommon *module,
         wasi_args->env_count = env_count;
         wasi_args->argv = argv;
         wasi_args->argc = (uint32)argc;
+        wasi_args->stdio[0] = stdinfd;
+        wasi_args->stdio[1] = stdoutfd;
+        wasi_args->stdio[2] = stderrfd;
     }
+}
+
+void
+wasm_runtime_set_wasi_args(WASMModuleCommon *module,
+                           const char *dir_list[], uint32 dir_count,
+                           const char *map_dir_list[], uint32 map_dir_count,
+                           const char *env_list[], uint32 env_count,
+                           char *argv[], int argc)
+{
+    wasm_runtime_set_wasi_args_ex(module,
+                                  dir_list, dir_count,
+                                  map_dir_list, map_dir_count,
+                                  env_list, env_count,
+                                  argv, argc,
+                                  -1, -1, -1);
 }
 
 #if WASM_ENABLE_UVWASI == 0
@@ -1830,6 +1851,7 @@ wasm_runtime_init_wasi(WASMModuleInstanceCommon *module_inst,
                        const char *map_dir_list[], uint32 map_dir_count,
                        const char *env[], uint32 env_count,
                        char *argv[], uint32 argc,
+                       int stdinfd, int stdoutfd, int stderrfd,
                        char *error_buf, uint32 error_buf_size)
 {
     WASIContext *wasi_ctx;
@@ -1951,9 +1973,9 @@ wasm_runtime_init_wasi(WASMModuleInstanceCommon *module_inst,
     argv_environ_inited = true;
 
     /* Prepopulate curfds with stdin, stdout, and stderr file descriptors. */
-    if (!fd_table_insert_existing(curfds, 0, 0)
-        || !fd_table_insert_existing(curfds, 1, 1)
-        || !fd_table_insert_existing(curfds, 2, 2)) {
+    if (!fd_table_insert_existing(curfds, 0, (stdinfd != -1) ? stdinfd : 0)
+        || !fd_table_insert_existing(curfds, 1, (stdoutfd != -1) ? stdoutfd : 1)
+        || !fd_table_insert_existing(curfds, 2, (stderrfd != -1) ? stderrfd : 2)) {
         set_error_buf(error_buf, error_buf_size,
                       "Init wasi environment failed: init fd table failed");
         goto fail;
@@ -2065,6 +2087,7 @@ wasm_runtime_init_wasi(WASMModuleInstanceCommon *module_inst,
                        const char *map_dir_list[], uint32 map_dir_count,
                        const char *env[], uint32 env_count,
                        char *argv[], uint32 argc,
+                       int stdinfd, int stdoutfd, int stderrfd,
                        char *error_buf, uint32 error_buf_size)
 {
     uvwasi_t *uvwasi = NULL;
@@ -2084,6 +2107,9 @@ wasm_runtime_init_wasi(WASMModuleInstanceCommon *module_inst,
     init_options.allocator = &uvwasi_allocator;
     init_options.argc = argc;
     init_options.argv = (const char **)argv;
+    init_options.in = (stdinfd != -1) ? (uvwasi_fd_t)stdinfd : init_options.in;
+    init_options.out = (stdoutfd != -1) ? (uvwasi_fd_t)stdoutfd : init_options.out;
+    init_options.err = (stderrfd != -1) ? (uvwasi_fd_t)stderrfd : init_options.err;
 
     if (dir_count > 0) {
         init_options.preopenc = dir_count;
@@ -4002,3 +4028,141 @@ wasm_runtime_get_memory_data_size(
     return 0;
 }
 
+static inline bool
+argv_to_params(wasm_val_t *out_params,
+               const uint32 *argv,
+               WASMType *func_type)
+{
+    wasm_val_t *param = out_params;
+    uint32 i = 0, *u32;
+
+    for (i = 0; i < func_type->param_count; i++, param++) {
+        switch (func_type->types[i]) {
+            case VALUE_TYPE_I32:
+                param->kind = WASM_I32;
+                param->of.i32 = *argv++;
+                break;
+            case VALUE_TYPE_I64:
+                param->kind = WASM_I64;
+                u32 = (uint32 *)&param->of.i64;
+                u32[0] = *argv++;
+                u32[1] = *argv++;
+                break;
+            case VALUE_TYPE_F32:
+                param->kind = WASM_F32;
+                param->of.f32 = *(float32 *)argv++;
+                break;
+            case VALUE_TYPE_F64:
+                param->kind = WASM_F64;
+                u32 = (uint32 *)&param->of.i64;
+                u32[0] = *argv++;
+                u32[1] = *argv++;
+                break;
+            default:
+                return false;
+        }
+    }
+
+    return true;
+}
+
+static inline bool
+results_to_argv(uint32 *out_argv,
+                const wasm_val_t *results,
+                WASMType *func_type)
+{
+    const wasm_val_t *result = results;
+    uint32 *argv = out_argv, *u32, i;
+    uint8 *result_types = func_type->types + func_type->param_count;
+
+    for (i = 0; i < func_type->result_count; i++, result++) {
+        switch (result_types[i]) {
+            case VALUE_TYPE_I32:
+            case VALUE_TYPE_F32:
+                *(int32 *)argv++ = result->of.i32;
+                break;
+            case VALUE_TYPE_I64:
+            case VALUE_TYPE_F64:
+                u32 = (uint32 *)&result->of.i64;
+                *argv++ = u32[0];
+                *argv++ = u32[1];
+                break;
+            default:
+                return false;
+        }
+    }
+
+    return true;
+}
+
+bool
+wasm_runtime_invoke_c_api_native(WASMModuleInstanceCommon *module_inst,
+                                 void *func_ptr, WASMType *func_type,
+                                 uint32 argc, uint32 *argv,
+                                 bool with_env, void *wasm_c_api_env)
+{
+    wasm_val_t params_buf[16], results_buf[4];
+    wasm_val_t *params = params_buf, *results = results_buf;
+    wasm_trap_t *trap = NULL;
+    bool ret = false;
+
+    if (func_type->param_count > 16
+        && !(params = wasm_runtime_malloc(sizeof(wasm_val_t)
+                                          * func_type->param_count))) {
+        wasm_runtime_set_exception(module_inst, "allocate memory failed");
+        return false;
+    }
+
+    if (!argv_to_params(params, argv, func_type)) {
+        wasm_runtime_set_exception(module_inst, "unsupported param type");
+        goto fail;
+    }
+
+    if (!with_env) {
+        wasm_func_callback_t callback = (wasm_func_callback_t)func_ptr;
+        trap = callback(params, results);
+    }
+    else {
+        wasm_func_callback_with_env_t callback =
+          (wasm_func_callback_with_env_t)func_ptr;
+        trap = callback(wasm_c_api_env, params, results);
+    }
+
+    if (trap) {
+        if (trap->message->data) {
+            /* since trap->message->data does not end with '\0' */
+            char trap_message[128] = { 0 };
+            bh_memcpy_s(
+              trap_message, 127, trap->message->data,
+              (trap->message->size < 127 ? trap->message->size : 127));
+            wasm_runtime_set_exception(module_inst, trap_message);
+        }
+        else {
+            wasm_runtime_set_exception(
+              module_inst, "native function throw unknown exception");
+        }
+        wasm_trap_delete(trap);
+        goto fail;
+    }
+
+    if (func_type->result_count > 4
+        && !(results = wasm_runtime_malloc(sizeof(wasm_val_t)
+                                           * func_type->result_count))) {
+        wasm_runtime_set_exception(module_inst, "allocate memory failed");
+        goto fail;
+    }
+
+    if (!results_to_argv(argv, results, func_type)) {
+        wasm_runtime_set_exception(module_inst, "unsupported result type");
+        goto fail;
+    }
+
+    ret = true;
+
+fail:
+    if (params != params_buf)
+        wasm_runtime_free(params);
+    if (results != results_buf)
+        wasm_runtime_free(results);
+    return ret;
+}
