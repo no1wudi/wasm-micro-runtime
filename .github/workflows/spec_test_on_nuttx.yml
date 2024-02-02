@@ -34,13 +34,13 @@ jobs:
     with:
       os: "ubuntu-22.04"
       arch: "ARM RISCV AArch64"
-      container_image: ghcr.io/no1wudi/nuttx/apache-nuttx-ci-linux@sha256:8c4e00b607d4d6d66ba8f51c4544819a616eac69d3a2ac669e2af2150e2eb0f9
+      container_image: ghcr.io/no1wudi/nuttx/apache-nuttx-ci-linux@sha256:0409c1789437e12e0ddc495429be9eb50019f0e2eb8dfa64722f27c8f4c5ca7f
 
   spec_test_on_qemu:
     runs-on: ubuntu-latest
     needs: [build_llvm_libraries]
     container:
-      image: ghcr.io/no1wudi/nuttx/apache-nuttx-ci-linux@sha256:8c4e00b607d4d6d66ba8f51c4544819a616eac69d3a2ac669e2af2150e2eb0f9
+      image: ghcr.io/no1wudi/nuttx/apache-nuttx-ci-linux@sha256:0409c1789437e12e0ddc495429be9eb50019f0e2eb8dfa64722f27c8f4c5ca7f
     strategy:
       matrix:
         target_config: [
@@ -167,7 +167,7 @@ jobs:
       - name: Enable WAMR for NuttX
         run: |
           find nuttx/boards -name defconfig | xargs sed -i '$a\${{ env.WAMR_COMMON_OPTION }}'
-      
+
       - name: Enable WAMR Interpreter for NuttX
         run: |
           find nuttx/boards -name defconfig | xargs sed -i '$a\${{ matrix.wamr_test_option.option }}'
@@ -201,7 +201,7 @@ jobs:
           tools/configure.sh ${{ matrix.target_config.config }}
           make -j$(nproc)
           echo "firmware=$PWD/nuttx" >> $GITHUB_OUTPUT
-      
+
       - name: Test
         run: |
           cd apps/interpreters/wamr/wamr/tests/wamr-test-suites

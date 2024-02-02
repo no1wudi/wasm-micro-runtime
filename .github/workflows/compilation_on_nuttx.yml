@@ -52,7 +52,7 @@ jobs:
   build_iwasm_on_nuttx:
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/apache/nuttx/apache-nuttx-ci-linux@sha256:d9261eacf6c6ebe656c571757751c803e8f04c3ae9b820320a5ea5dd57b7205a
+      image: ghcr.io/no1wudi/nuttx/apache-nuttx-ci-linux@sha256:0409c1789437e12e0ddc495429be9eb50019f0e2eb8dfa64722f27c8f4c5ca7f
 
     strategy:
       matrix:

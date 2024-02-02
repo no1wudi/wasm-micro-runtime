@@ -447,6 +447,14 @@ function spec_test()
         fi
 
         echo "compile the reference intepreter"
+
+        # Check if opam is installed first
+        # Here we assume that the correct version of ocaml is installed
+        # and it's the default version for opam
+        if command -v opam &> /dev/null; then
+            eval $(opam env)
+        fi
+
         pushd interpreter
         make
         popd
