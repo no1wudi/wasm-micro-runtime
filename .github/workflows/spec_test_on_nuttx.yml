@@ -26,7 +26,7 @@ env:
   LLVM_CACHE_SUFFIX: "build-llvm_libraries_ex"
   WASI_SDK_PATH: "/opt/wasi-sdk"
   WAMR_COMMON_OPTION:
-    "CONFIG_INTERPRETERS_WAMR=y\\nCONFIG_INTERPRETERS_WAMR_STACKSIZE=327680\\nCONFIG_INTERPRETERS_WAMR_LOG=y\\nCONFIG_INTERPRETERS_WAMR_LIBC_BUILTIN=y\\nCONFIG_INTERPRETERS_WAMR_REF_TYPES=y\\nCONFIG_INTERPRETERS_WAMR_ENABLE_SPEC_TEST=y\\nCONFIG_INTERPRETERS_WAMR_SHARED_MEMORY=y\\nCONFIG_INTERPRETERS_WAMR_BULK_MEMORY=y\\nCONFIG_EOL_IS_LF=y\\nCONFIG_ARM_SEMIHOSTING_HOSTFS=y\\nCONFIG_ARM_SEMIHOSTING_HOSTFS_CACHE_COHERENCE=y\\nCONFIG_RISCV_SEMIHOSTING_HOSTFS=y\\nCONFIG_FS_HOSTFS=y\\nCONFIG_LIBC_FLOATINGPOINT=y\\n"
+    "CONFIG_INTERPRETERS_WAMR=y\\nCONFIG_INTERPRETERS_WAMR_STACKSIZE=327680\\nCONFIG_INTERPRETERS_WAMR_LOG=y\\nCONFIG_INTERPRETERS_WAMR_LIBC_BUILTIN=y\\nCONFIG_INTERPRETERS_WAMR_REF_TYPES=y\\nCONFIG_INTERPRETERS_WAMR_ENABLE_SPEC_TEST=y\\nCONFIG_INTERPRETERS_WAMR_SHARED_MEMORY=y\\nCONFIG_INTERPRETERS_WAMR_BULK_MEMORY=y\\nCONFIG_EOL_IS_LF=y\\nCONFIG_ARM_SEMIHOSTING_HOSTFS=y\\nCONFIG_ARM_SEMIHOSTING_HOSTFS_CACHE_COHERENCE=y\\nCONFIG_LIBC_FLOATINGPOINT=y\\n"
 
 jobs:
   build_llvm_libraries:
@@ -110,14 +110,14 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: apache/incubator-nuttx
-          ref: releases/12.4
+          ref: releases/12.5
           path: nuttx
 
       - name: Checkout NuttX Apps
         uses: actions/checkout@v4
         with:
           repository: apache/incubator-nuttx-apps
-          ref: releases/12.4
+          ref: releases/12.5
           path: apps
 
       - name: Checkout WAMR
@@ -167,7 +167,7 @@ jobs:
       - name: Enable WAMR for NuttX
         run: |
           find nuttx/boards -name defconfig | xargs sed -i '$a\${{ env.WAMR_COMMON_OPTION }}'
-      
+
       - name: Enable WAMR Interpreter for NuttX
         run: |
           find nuttx/boards -name defconfig | xargs sed -i '$a\${{ matrix.wamr_test_option.option }}'
@@ -201,7 +201,7 @@ jobs:
           tools/configure.sh ${{ matrix.target_config.config }}
           make -j$(nproc)
           echo "firmware=$PWD/nuttx" >> $GITHUB_OUTPUT
-      
+
       - name: Test
         run: |
           cd apps/interpreters/wamr/wamr/tests/wamr-test-suites

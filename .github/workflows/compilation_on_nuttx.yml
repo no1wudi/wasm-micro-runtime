@@ -62,7 +62,7 @@ jobs:
           # cortex-m7
           "boards/arm/stm32h7/nucleo-h743zi/configs/nsh",
           # riscv32imc
-          "boards/risc-v/espressif/esp32c3-generic/configs/nsh",
+          "boards/risc-v/esp32c3/esp32c3-generic/configs/nsh",
           # riscv32gc
           "boards/risc-v/qemu-rv/rv-virt/configs/nsh",
           # riscv64gc
@@ -88,14 +88,14 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: apache/incubator-nuttx
-          ref: releases/12.4
+          ref: releases/12.5
           path: nuttx
 
       - name: Checkout NuttX Apps
         uses: actions/checkout@v4
         with:
           repository: apache/incubator-nuttx-apps
-          ref: releases/12.4
+          ref: releases/12.5
           path: apps
 
       - name: Checkout WAMR
