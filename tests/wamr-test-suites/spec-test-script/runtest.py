@@ -65,7 +65,8 @@ aot_target_options_map = {
 # AOT compilation options mapping for XIP mode
 aot_target_options_map_xip = {
     # avoid l32r relocations for xtensa
-    "xtensa": ["--mllvm=-mtext-section-literals"]
+    "xtensa": ["--mllvm=-mtext-section-literals"],
+    "riscv64": ["--enable-builtin-intrinsics=fp.common,fpxint,f32.const,f64.const,f64_promote_f32,f32_demote_f64"],
 }
 
 def debug(data):
